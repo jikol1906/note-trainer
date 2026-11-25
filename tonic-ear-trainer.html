@@ -430,11 +430,25 @@ async function startMic(){
   buf = new Float32Array(analyser.fftSize);
   mic = stream;
   loopId = setInterval(tick, 40);
+  keepAwake();
 }
+
+// keep the phone screen on while playing (you've got both hands on the guitar)
+let wakeLock = null;
+async function keepAwake(){
+  if (!mic || wakeLock || !("wakeLock" in navigator) || document.visibilityState !== "visible") return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => { wakeLock = null; });
+  } catch(e){ wakeLock = null; } // e.g. battery saver / unsupported: just carry on
+}
+// the browser drops the lock whenever the tab is hidden, so grab it again on return
+document.addEventListener("visibilitychange", keepAwake);
 function stopMic(){
   clearInterval(loopId); phase = "idle";
   if (mic) mic.getTracks().forEach(t => t.stop());
   mic = null; analyser = null;
+  if (wakeLock){ wakeLock.release().catch(()=>{}); wakeLock = null; }
 }
 
 // YIN pitch detection -> {rms, f} (f = -1 if no clear pitch)
