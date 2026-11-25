@@ -416,7 +416,7 @@ $("answers").onclick = e => {
 // ---------- guitar: mic + pitch detection ----------
 let mic = null, analyser = null, buf = null, loopId = 0;
 let phase = "idle", listenAt = 0, deadline = 0, muteUntil = 0;
-let stNote = null, stSince = 0, env = 0, attackAt = -1;
+let stNote = null, stSince = 0, lastSeen = 0, env = 0, attackAt = -1;
 
 async function startMic(){
   if (mic) return;
@@ -425,7 +425,7 @@ async function startMic(){
   const stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false}});
   initAudio();
   const src = ctx.createMediaStreamSource(stream);
-  analyser = ctx.createAnalyser(); analyser.fftSize = 2048;
+  analyser = ctx.createAnalyser(); analyser.fftSize = 4096; // long window: low strings need a few periods
   src.connect(analyser); // not connected to the speakers
   buf = new Float32Array(analyser.fftSize);
   mic = stream;
@@ -441,7 +441,7 @@ function stopMic(){
 function detect(b, sr){
   let rms = 0; for (let i=0;i<b.length;i++) rms += b[i]*b[i];
   rms = Math.sqrt(rms/b.length);
-  if (rms < .008) return {rms, f:-1};
+  if (rms < .002) return {rms, f:-1}; // low gate: an acoustic guitar via a laptop mic is quiet (YIN is level-independent)
   const W = b.length >> 1, minT = Math.floor(sr/1400), maxT = Math.min(W-1, Math.ceil(sr/70));
   const d = new Float32Array(maxT+2);
   for (let t=1;t<=maxT;t++){ let s=0; for (let i=0;i<W;i++){ const v=b[i]-b[i+t]; s+=v*v; } d[t]=s; }
@@ -449,7 +449,7 @@ function detect(b, sr){
   for (let t=1;t<=maxT;t++){ run += d[t]; d[t] = run ? d[t]*t/run : 1; }
   let tau = -1;
   for (let t=Math.max(2,minT); t<maxT; t++){
-    if (d[t] < .12){ while (t+1 < maxT && d[t+1] < d[t]) t++; tau = t; break; }
+    if (d[t] < .15){ while (t+1 < maxT && d[t+1] < d[t]) t++; tau = t; break; }
   }
   if (tau < 0) return {rms, f:-1};
   const a = d[tau-1], c = d[tau], e = d[tau+1], den = a - 2*c + e;
@@ -468,11 +468,13 @@ function tick(){
   analyser.getFloatTimeDomainData(buf);
   const now = ctx.currentTime;
   const {rms, f} = detect(buf, ctx.sampleRate);
-  if (rms > Math.max(.015, env*1.8)) attackAt = now; // a fresh pluck
+  if (rms > Math.max(.004, env*1.8)) attackAt = now; // a fresh pluck
   env = env*.8 + rms*.2;
 
   let n = null, cents = 0;
   if (f > 0){ const m = 69 + 12*Math.log2(f/440); n = Math.round(m); cents = Math.round((m-n)*100); }
+  if (n !== null) lastSeen = now;
+  else if (stNote !== null && now - lastSeen < .15) n = stNote; // ride out one-frame dropouts of a decaying string
   if (n !== stNote){ stNote = n; stSince = now; }
 
   const muted = now < muteUntil || phase === "wait";
